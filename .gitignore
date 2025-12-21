@@ -1,0 +1,24 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+.poetry-cache/
+
+# Node
+node_modules/
+.next/
+.npm/
+pnpm-lock.yaml
+package-lock.json
+
+# Editors
+.DS_Store
+.idea/
+.vscode/
+
+# Env
+.env
+.env.*
+
+BACKLOG.md

@@ -1,0 +1,57 @@
+[tool.poetry]
+name = "spendario-backend"
+version = "0.1.0"
+description = "FastAPI backend for Spendario"
+authors = ["Spendario Team <dev@spendario.dev>"]
+readme = "README.md"
+packages = [{ include = "app", from = "src" }]
+
+[tool.poetry.dependencies]
+python = "^3.12"
+fastapi = "^0.111.0"
+uvicorn = { version = "^0.29.0", extras = ["standard"] }
+pydantic = "^2.7.0"
+sqlalchemy = "^2.0.29"
+asyncpg = "^0.29.0"
+alembic = "^1.13.1"
+python-jose = { version = "^3.3.0", extras = ["cryptography"] }
+passlib = { version = "^1.7.4", extras = ["bcrypt"] }
+structlog = "^24.1.0"
+
+[tool.poetry.group.dev.dependencies]
+pytest = "^8.1.1"
+pytest-asyncio = "^0.23.5"
+httpx = "^0.27.0"
+mypy = "^1.9.0"
+ruff = "^0.4.2"
+black = "^24.4.0"
+
+[build-system]
+requires = ["poetry-core>=1.8.0"]
+build-backend = "poetry.core.masonry.api"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+fix = false
+src = ["src"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "PL", "RUF"]
+ignore = [
+  "E501", # handled by Black
+]
+
+[tool.ruff.isort]
+combine-as-imports = true
+
+[tool.black]
+line-length = 100
+target-version = ["py312"]
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = ["src"]
+plugins = []
+ignore_missing_imports = true
