@@ -18,11 +18,7 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
     if existing.scalar_one_or_none():
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Email already registered")
 
-    user = User(
-        email=payload.email,
-        hashed_password=hash_password(payload.password),
-        full_name=payload.full_name,
-    )
+    user = User(email=payload.email, hashed_password=hash_password(payload.password), full_name=payload.full_name)
     session.add(user)
     await session.commit()
     await session.refresh(user)
@@ -35,7 +31,8 @@ async def register(payload: RegisterRequest, session: AsyncSession = Depends(get
 async def login(payload: LoginRequest, session: AsyncSession = Depends(get_db_session)) -> TokenResponse:
     result = await session.execute(select(User).where(User.email == payload.email))
     user = result.scalar_one_or_none()
-    if not user or not verify_password(payload.password, user.hashed_password):
+    valid_password = user is not None and verify_password(payload.password, user.hashed_password)
+    if not user or not valid_password:
         raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="Invalid credentials")
 
     token = create_access_token(user.id)

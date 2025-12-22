@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import type { ReactNode } from "react";
 import "./globals.css";
 
@@ -21,12 +22,20 @@ export default function RootLayout({ children }: { children: ReactNode }) {
                   <p className="text-lg font-semibold">Controle de gastos, sem fricção</p>
                 </div>
               </div>
-              <a
-                className="rounded-lg border border-emerald-500 px-3 py-1 text-sm font-medium text-emerald-100 transition hover:-translate-y-0.5 hover:border-emerald-300 hover:text-white"
-                href="#"
-              >
-                Entrar
-              </a>
+              <div className="flex items-center gap-3">
+                <Link
+                  className="rounded-lg border border-slate-700 px-3 py-1.5 text-sm font-medium text-slate-100 transition hover:-translate-y-0.5 hover:border-emerald-400 hover:text-white"
+                  href="/login"
+                >
+                  Entrar
+                </Link>
+                <Link
+                  className="rounded-lg border border-emerald-500 bg-emerald-500/10 px-3 py-1.5 text-sm font-semibold text-emerald-100 transition hover:-translate-y-0.5 hover:border-emerald-300 hover:text-white"
+                  href="/register"
+                >
+                  Criar conta
+                </Link>
+              </div>
             </div>
           </header>
           <main className="mx-auto max-w-5xl px-6 py-10">{children}</main>

@@ -6,10 +6,11 @@ WORKDIR /app
 
 RUN apk add --no-cache libc6-compat
 
-COPY package.json package-lock.json* tsconfig.json next.config.mjs tailwind.config.ts postcss.config.js .eslintrc.json ./
+COPY package.json package-lock.json ./
+RUN npm ci
+
+COPY tsconfig.json next.config.mjs tailwind.config.ts postcss.config.js .eslintrc.json ./
 COPY app ./app
 COPY public ./public
-
-RUN npm install
 
 CMD ["npm", "run", "dev", "--", "--hostname", "0.0.0.0", "--port", "3000"]

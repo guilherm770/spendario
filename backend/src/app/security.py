@@ -13,7 +13,6 @@ MAX_PASSWORD_BYTES = 72
 pwd_context = CryptContext(
     schemes=["bcrypt"],
     deprecated="auto",
-    bcrypt__truncate_error=False,
 )
 
 
