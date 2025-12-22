@@ -24,6 +24,21 @@ Comandos úteis:
 - `make type` — checa tipos (mypy + tsc).
 - `make test` — roda testes do backend.
 - `make dev-backend` / `make dev-frontend` — servidores isolados.
+- `make db-upgrade` — aplica migrações Alembic (usa `DATABASE_URL`).
+
+## Ambiente com Docker
+```bash
+make docker-up   # sobe Postgres, backend (8000) e frontend (3000) com hot-reload
+make docker-down # derruba os containers
+make docker-logs # acompanha os logs
+```
+
+Detalhes:
+- Compose em `docker-compose.yml` com Postgres 16, backend FastAPI e frontend Next.js.
+- Código é montado via bind mount, então mudanças refletem sem rebuild.
+- Credenciais padrão do Postgres: user `spendario`, senha `spendario`, db `spendario` (para dev local).
+- O Makefile detecta `docker-compose` legado ou o plugin `docker compose`. Certifique-se de ter um deles instalado.
+- Para rodar migrações no container do backend: `make docker-up` e depois `docker compose exec backend poetry run alembic upgrade head` (ou `docker-compose exec ...` se usar o binário legado).
 
 ## CI/CD
 - Workflow em `.github/workflows/ci.yml` executa lint e type-check de frontend e backend em pushes e PRs.

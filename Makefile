@@ -1,4 +1,7 @@
 .PHONY: dev dev-backend dev-frontend lint lint-backend lint-frontend type type-backend type-frontend setup setup-backend setup-frontend test test-backend
+.PHONY: docker-up docker-down docker-logs docker-build db-upgrade db-revision
+
+DOCKER_COMPOSE ?= $(shell if command -v docker-compose >/dev/null 2>&1; then echo docker-compose; else echo docker compose; fi)
 
 setup: setup-backend setup-frontend
 
@@ -39,3 +42,21 @@ test: test-backend
 
 test-backend:
 	cd backend && poetry run pytest
+
+docker-up:
+	$(DOCKER_COMPOSE) up --build
+
+docker-down:
+	$(DOCKER_COMPOSE) down
+
+docker-logs:
+	$(DOCKER_COMPOSE) logs -f
+
+docker-build:
+	$(DOCKER_COMPOSE) build
+
+db-upgrade:
+	cd backend && poetry run alembic upgrade head
+
+db-revision:
+	cd backend && poetry run alembic revision --autogenerate -m "$(name)"
