@@ -26,7 +26,7 @@ test.describe("Shell autenticado", () => {
 
     await page.getByRole("link", { name: "Despesas" }).click();
     await expect(page).toHaveURL(/\/expenses/);
-    await expect(page.getByRole("heading", { name: "Lista e filtros" })).toBeVisible();
+    await expect(page.getByRole("heading", { name: "Formulário rápido" })).toBeVisible();
 
     await page.getByRole("link", { name: "Categorias" }).click();
     await expect(page).toHaveURL(/\/categories/);

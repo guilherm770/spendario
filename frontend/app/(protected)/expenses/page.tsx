@@ -1,38 +1,702 @@
-const PlaceholderRow = ({ label, meta }: { label: string; meta: string }) => (
-  <div className="flex items-center justify-between rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-3 text-sm text-slate-200">
-    <span>{label}</span>
-    <span className="text-slate-400">{meta}</span>
-  </div>
-);
+"use client";
+
+import { FormEvent, useEffect, useMemo, useState } from "react";
+
+type CategoryOption = {
+  id: number;
+  label: string;
+  icon: string;
+  keywords: string[];
+};
+
+type Expense = {
+  id: string;
+  amount: string;
+  currency: string;
+  description: string;
+  transaction_date: string;
+  category_id: number;
+};
+
+type FormState = {
+  amount: string;
+  description: string;
+  date: string;
+  categoryInput: string;
+  currency: string;
+};
+
+type FormErrors = Partial<Record<keyof FormState, string>>;
+
+const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const today = new Date().toISOString().split("T")[0];
+
+const categories: CategoryOption[] = [
+  { id: 1, label: "Alimentação", icon: "🍽️", keywords: ["mercado", "restaurante", "comida"] },
+  { id: 2, label: "Transporte", icon: "🚌", keywords: ["uber", "combustível", "gasolina"] },
+  { id: 3, label: "Moradia", icon: "🏠", keywords: ["aluguel", "condomínio", "contas"] },
+  { id: 4, label: "Saúde", icon: "🩺", keywords: ["farmácia", "remédio", "consulta"] },
+  { id: 5, label: "Lazer", icon: "🎉", keywords: ["cinema", "viagem", "passeio"] },
+  { id: 6, label: "Educação", icon: "📚", keywords: ["curso", "livro", "faculdade"] },
+  { id: 7, label: "Supermercado", icon: "🛒", keywords: ["compras", "mercado"] },
+  { id: 8, label: "Assinaturas", icon: "💻", keywords: ["streaming", "software", "app"] },
+  { id: 9, label: "Serviços", icon: "🛠️", keywords: ["manutenção", "prestação"] },
+  { id: 10, label: "Impostos", icon: "💸", keywords: ["taxa", "iptu", "ipva"] },
+  { id: 11, label: "Investimentos", icon: "📈", keywords: ["aplicação", "renda"] },
+  { id: 12, label: "Pets", icon: "🐾", keywords: ["veterinário", "ração"] },
+  { id: 13, label: "Viagem", icon: "✈️", keywords: ["hotel", "passagem"] },
+  { id: 14, label: "Presentes", icon: "🎁", keywords: ["aniversário", "surpresa"] },
+  { id: 15, label: "Outros", icon: "🧭", keywords: ["diversos", "extra"] },
+];
+
+const normalize = (value: string) => value.trim().toLowerCase();
+
+const resolveCategory = (input: string): CategoryOption | undefined => {
+  const normalized = normalize(input);
+  if (!normalized) return undefined;
+  return categories.find(
+    (item) =>
+      normalize(item.label) === normalized ||
+      item.keywords.some((keyword) => normalize(keyword) === normalized) ||
+      normalize(item.label).includes(normalized),
+  );
+};
+
+const formatCurrency = (amount: string, currency: string) => {
+  const value = Number(amount);
+  if (Number.isNaN(value)) return `${currency} ${amount}`;
+  try {
+    return new Intl.NumberFormat("pt-BR", { style: "currency", currency: currency || "BRL" }).format(value);
+  } catch {
+    return `${currency} ${amount}`;
+  }
+};
+
+const toFormState = (expense: Expense): FormState => ({
+  amount: String(expense.amount),
+  description: expense.description,
+  date: expense.transaction_date,
+  categoryInput: categories.find((category) => category.id === expense.category_id)?.label ?? "",
+  currency: expense.currency,
+});
 
 export default function ExpensesPage() {
+  const [form, setForm] = useState<FormState>({
+    amount: "",
+    description: "",
+    date: today,
+    categoryInput: "",
+    currency: "BRL",
+  });
+  const [errors, setErrors] = useState<FormErrors>({});
+  const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
+  const [serverMessage, setServerMessage] = useState("");
+
+  const [list, setList] = useState<Expense[]>([]);
+  const [listStatus, setListStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
+  const [listMessage, setListMessage] = useState("");
+
+  const [editing, setEditing] = useState<Expense | null>(null);
+  const [editForm, setEditForm] = useState<FormState | null>(null);
+  const [editErrors, setEditErrors] = useState<FormErrors>({});
+  const [editStatus, setEditStatus] = useState<"idle" | "loading" | "error">("idle");
+  const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
+
+  const matchedCategory = useMemo(() => resolveCategory(form.categoryInput), [form.categoryInput]);
+  const matchedEditCategory = useMemo(
+    () => resolveCategory(editForm?.categoryInput ?? ""),
+    [editForm?.categoryInput],
+  );
+
+  const validate = (state: FormState): FormErrors => {
+    const next: FormErrors = {};
+
+    const numeric = Number(state.amount.replace(",", "."));
+    if (!state.amount || Number.isNaN(numeric) || numeric <= 0) {
+      next.amount = "Informe um valor maior que zero.";
+    }
+
+    if (!state.description.trim()) {
+      next.description = "Adicione uma descrição curta.";
+    }
+
+    if (!state.date) {
+      next.date = "Escolha a data.";
+    }
+
+    if (!resolveCategory(state.categoryInput)) {
+      next.categoryInput = "Selecione uma categoria da lista.";
+    }
+
+    return next;
+  };
+
+  const token = () => (typeof window !== "undefined" ? localStorage.getItem("spendario.token") : null);
+
+  const fetchList = async () => {
+    const auth = token();
+    if (!auth) {
+      setListStatus("error");
+      setListMessage("Faça login novamente para carregar suas despesas.");
+      return;
+    }
+    setListStatus("loading");
+    setListMessage("");
+    try {
+      const response = await fetch(`${API_BASE_URL}/expenses`, {
+        headers: { Authorization: `Bearer ${auth}` },
+      });
+      if (!response.ok) {
+        throw new Error("Falha ao carregar despesas");
+      }
+      const data = (await response.json()) as { items: Expense[] };
+      setList(data.items || []);
+      setListStatus("loaded");
+    } catch (error) {
+      setListStatus("error");
+      setListMessage(error instanceof Error ? error.message : "Erro ao carregar despesas.");
+    }
+  };
+
+  useEffect(() => {
+    fetchList().catch(() => setListStatus("error"));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
+
+  const updateField = (field: keyof FormState, value: string) => {
+    setForm((prev) => ({ ...prev, [field]: value }));
+    setErrors((prev) => ({ ...prev, [field]: "" }));
+    setServerMessage("");
+  };
+
+  const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setServerMessage("");
+    const validation = validate(form);
+    if (Object.keys(validation).length > 0) {
+      setErrors(validation);
+      setStatus("error");
+      return;
+    }
+
+    const category = resolveCategory(form.categoryInput);
+    if (!category) return;
+
+    const auth = token();
+    if (!auth) {
+      setServerMessage("Faça login novamente para lançar despesas.");
+      setStatus("error");
+      return;
+    }
+
+    setStatus("loading");
+    try {
+      const numeric = Number(form.amount.replace(",", "."));
+      const payload = {
+        amount: numeric.toFixed(2),
+        currency: form.currency.trim().toUpperCase() || "BRL",
+        description: form.description.trim(),
+        transaction_date: form.date,
+        category_id: category.id,
+      };
+
+      const response = await fetch(`${API_BASE_URL}/expenses`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))) as { detail?: unknown };
+        const message =
+          typeof detail?.detail === "string"
+            ? detail.detail
+            : response.status === 401
+              ? "Sessão expirada. Entre novamente."
+              : "Não foi possível salvar. Tente em instantes.";
+        throw new Error(message);
+      }
+
+      const created = (await response.json()) as Expense;
+
+      setStatus("success");
+      setServerMessage("Despesa salva! Enter novamente lança outra.");
+      setForm((prev) => ({
+        ...prev,
+        amount: "",
+        description: "",
+        categoryInput: "",
+      }));
+      setList((prev) => [created, ...prev]);
+    } catch (error) {
+      setStatus("error");
+      setServerMessage(error instanceof Error ? error.message : "Erro inesperado. Tente novamente.");
+    }
+  };
+
+  const handleEditOpen = (expense: Expense) => {
+    setEditing(expense);
+    setEditForm(toFormState(expense));
+    setEditErrors({});
+    setEditStatus("idle");
+  };
+
+  const handleEditSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (!editing || !editForm) return;
+    const validation = validate(editForm);
+    if (Object.keys(validation).length > 0) {
+      setEditErrors(validation);
+      setEditStatus("error");
+      return;
+    }
+
+    const category = resolveCategory(editForm.categoryInput);
+    if (!category) return;
+    const auth = token();
+    if (!auth) {
+      setEditStatus("error");
+      setEditErrors((prev) => ({ ...prev, categoryInput: "Sessão expirada. Refaça login." }));
+      return;
+    }
+
+    setEditStatus("loading");
+    try {
+      const numeric = Number(editForm.amount.replace(",", "."));
+      const payload = {
+        amount: numeric.toFixed(2),
+        currency: editForm.currency.trim().toUpperCase() || "BRL",
+        description: editForm.description.trim(),
+        transaction_date: editForm.date,
+        category_id: category.id,
+      };
+
+      const response = await fetch(`${API_BASE_URL}/expenses/${editing.id}`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${auth}`,
+        },
+        body: JSON.stringify(payload),
+      });
+
+      if (!response.ok) {
+        const detail = (await response.json().catch(() => ({}))) as { detail?: unknown };
+        const message =
+          typeof detail?.detail === "string"
+            ? detail.detail
+            : response.status === 401
+              ? "Sessão expirada. Entre novamente."
+              : "Não foi possível atualizar. Tente de novo.";
+        throw new Error(message);
+      }
+
+      const updated = (await response.json()) as Expense;
+      setList((prev) => prev.map((item) => (item.id === updated.id ? updated : item)));
+      setEditing(null);
+      setEditForm(null);
+      setEditStatus("idle");
+      fetchList().catch(() => setListStatus("error"));
+    } catch (error) {
+      setEditStatus("error");
+      setListMessage(error instanceof Error ? error.message : "Erro ao salvar alteração.");
+    }
+  };
+
+  const handleDelete = async (expense: Expense) => {
+    const auth = token();
+    if (!auth) {
+      setListMessage("Sessão expirada. Refaça login para excluir.");
+      return;
+    }
+    setPendingDeleteId(expense.id);
+    try {
+      const response = await fetch(`${API_BASE_URL}/expenses/${expense.id}`, {
+        method: "DELETE",
+        headers: { Authorization: `Bearer ${auth}` },
+      });
+      if (!response.ok && response.status !== 204) {
+        throw new Error("Não foi possível excluir agora.");
+      }
+      setList((prev) => prev.filter((item) => item.id !== expense.id));
+      setPendingDeleteId(null);
+      fetchList().catch(() => setListStatus("error"));
+    } catch (error) {
+      setListMessage(error instanceof Error ? error.message : "Erro ao excluir.");
+      setPendingDeleteId(null);
+    }
+  };
+
+  const listEmpty = listStatus === "loaded" && list.length === 0;
+
   return (
-    <div className="space-y-5">
-      <div className="flex flex-wrap items-center justify-between gap-3">
+    <div className="space-y-6">
+      <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.25em] text-emerald-300/70">Despesas</p>
-          <h1 className="text-2xl font-bold text-white">Lista e filtros</h1>
-          <p className="text-sm text-slate-300">Pronto para conectar ao backend com paginação e filtros.</p>
+          <h1 className="text-2xl font-bold text-white">Formulário rápido</h1>
+          <p className="text-sm text-slate-300">Valor, data, categoria e nota — Enter já salva.</p>
         </div>
-        <button className="rounded-lg border border-emerald-400/60 bg-emerald-400/10 px-4 py-2 text-sm font-semibold text-emerald-100 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/20">
-          Nova despesa
-        </button>
+        <div className="rounded-full border border-emerald-400/40 bg-emerald-400/10 px-3 py-1 text-xs text-emerald-100">
+          Atalho: Enter envia
+        </div>
       </div>
 
-      <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3">
-        <PlaceholderRow label="Cartão • Mercado" meta="R$ 120,00 · Hoje" />
-        <PlaceholderRow label="Transporte" meta="R$ 38,00 · Ontem" />
-        <PlaceholderRow label="Assinaturas" meta="R$ 59,90 · 2 dias" />
+      <form
+        className="grid gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-emerald-500/10 md:grid-cols-4"
+        onSubmit={handleSubmit}
+      >
+        <div className="md:col-span-1">
+          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="amount">
+            Valor
+            <span className="text-xs font-normal text-slate-400">Rápido: 120,50</span>
+          </label>
+          <input
+            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+            data-testid="expense-amount"
+            id="amount"
+            inputMode="decimal"
+            maxLength={12}
+            placeholder="0,00"
+            value={form.amount}
+            onChange={(event) => updateField("amount", event.target.value)}
+            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+          />
+          {errors.amount && <p className="mt-1 text-xs text-rose-300">{errors.amount}</p>}
+        </div>
+
+        <div className="md:col-span-1">
+          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="date">
+            Data
+            <span className="text-xs font-normal text-slate-400">Default: hoje</span>
+          </label>
+          <input
+            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+            data-testid="expense-date"
+            id="date"
+            type="date"
+            value={form.date}
+            onChange={(event) => updateField("date", event.target.value)}
+            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+          />
+          {errors.date && <p className="mt-1 text-xs text-rose-300">{errors.date}</p>}
+        </div>
+
+        <div className="md:col-span-1">
+          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="category">
+            Categoria
+            <span className="text-xs font-normal text-slate-400">Autocomplete</span>
+          </label>
+          <input
+            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+            data-testid="expense-category"
+            id="category"
+            list="expense-categories"
+            placeholder="Ex: Alimentação"
+            value={form.categoryInput}
+            onChange={(event) => updateField("categoryInput", event.target.value)}
+            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+          />
+          <datalist id="expense-categories">
+            {categories.map((category) => (
+              <option key={category.id} value={category.label}>
+                {category.label}
+              </option>
+            ))}
+          </datalist>
+          {errors.categoryInput && <p className="mt-1 text-xs text-rose-300">{errors.categoryInput}</p>}
+          <div className="mt-2 flex flex-wrap gap-2">
+            {categories.slice(0, 5).map((category) => (
+              <button
+                key={category.id}
+                className={`rounded-full border px-3 py-1 text-xs transition ${
+                  matchedCategory?.id === category.id
+                    ? "border-emerald-400/70 bg-emerald-400/10 text-emerald-100"
+                    : "border-slate-700 bg-slate-900/70 text-slate-200 hover:border-emerald-300/60"
+                }`}
+                onClick={(event) => {
+                  event.preventDefault();
+                  updateField("categoryInput", category.label);
+                }}
+                type="button"
+              >
+                <span className="mr-1">{category.icon}</span>
+                {category.label}
+              </button>
+            ))}
+          </div>
+        </div>
+
+        <div className="md:col-span-1">
+          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="description">
+            Descrição
+            <span className="text-xs font-normal text-slate-400">Opcional curta</span>
+          </label>
+          <input
+            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+            data-testid="expense-description"
+            id="description"
+            maxLength={80}
+            placeholder="Ex: Mercado da semana"
+            value={form.description}
+            onChange={(event) => updateField("description", event.target.value)}
+            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+          />
+          {errors.description && <p className="mt-1 text-xs text-rose-300">{errors.description}</p>}
+
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <button
+              className="flex items-center justify-center gap-2 rounded-lg border border-emerald-400/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-50 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-70"
+              data-testid="expense-submit"
+              type="submit"
+              disabled={status === "loading"}
+            >
+              {status === "loading" ? "Salvando..." : "Salvar (Enter)"}
+            </button>
+            <span className="text-xs text-slate-400">Shift + Tab + Enter também envia.</span>
+          </div>
+          {serverMessage && (
+            <div
+              className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+                status === "success"
+                  ? "border-emerald-400/60 bg-emerald-400/10 text-emerald-50"
+                  : "border-amber-400/60 bg-amber-500/10 text-amber-50"
+              }`}
+              data-testid="expense-feedback"
+              role="status"
+            >
+              {serverMessage}
+            </div>
+          )}
+        </div>
+      </form>
+
+      <div className="space-y-3 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-emerald-500/10">
+        <div className="flex items-start justify-between gap-3">
+          <div>
+            <p className="text-xs uppercase tracking-[0.25em] text-emerald-300/70">Lista</p>
+            <h2 className="text-xl font-semibold text-white">Edição inline e exclusão</h2>
+            <p className="text-sm text-slate-300">Clique em editar para abrir o drawer e salvar rápido.</p>
+          </div>
+          {listStatus === "loading" && <span className="text-xs text-slate-400">Carregando...</span>}
+        </div>
+
+        {listMessage && (
+          <div className="rounded-lg border border-amber-400/60 bg-amber-500/10 px-3 py-2 text-xs text-amber-50">
+            {listMessage}
+          </div>
+        )}
+
+        {listEmpty && (
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 px-4 py-6 text-sm text-slate-200">
+            Nenhuma despesa ainda. Use o formulário acima ou importe via CSV em breve.
+          </div>
+        )}
+
+        {listStatus === "loaded" && list.length > 0 && (
+          <div className="space-y-2">
+            {list.map((expense) => {
+              const categoryLabel = categories.find((category) => category.id === expense.category_id)?.label;
+              return (
+                <div
+                  key={expense.id}
+                  className="flex flex-wrap items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/60 px-4 py-3 text-sm text-slate-200"
+                  data-testid={`expense-row-${expense.id}`}
+                >
+                  <div>
+                    <p className="text-base font-semibold text-white">{expense.description}</p>
+                    <p className="text-xs text-slate-400">
+                      {formatCurrency(expense.amount, expense.currency)} •{" "}
+                      {new Date(expense.transaction_date).toLocaleDateString("pt-BR")}{" "}
+                      {categoryLabel ? `• ${categoryLabel}` : ""}
+                    </p>
+                  </div>
+                  <div className="flex items-center gap-2">
+                    <button
+                      className="rounded-lg border border-emerald-400/60 bg-emerald-500/10 px-3 py-1.5 text-xs font-semibold text-emerald-50 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/20"
+                      data-testid={`expense-edit-${expense.id}`}
+                      onClick={() => handleEditOpen(expense)}
+                      type="button"
+                    >
+                      Editar
+                    </button>
+                    {pendingDeleteId === expense.id ? (
+                      <div className="flex items-center gap-2">
+                        <button
+                          className="rounded-lg border border-rose-400/60 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-50 transition"
+                          onClick={() => handleDelete(expense)}
+                          type="button"
+                        >
+                          Confirmar
+                        </button>
+                        <button
+                          className="rounded-lg border border-slate-700 px-3 py-1.5 text-xs font-semibold text-slate-200 transition hover:border-slate-500"
+                          onClick={() => setPendingDeleteId(null)}
+                          type="button"
+                        >
+                          Cancelar
+                        </button>
+                      </div>
+                    ) : (
+                      <button
+                        className="rounded-lg border border-rose-400/60 bg-rose-500/10 px-3 py-1.5 text-xs font-semibold text-rose-50 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-rose-500/20"
+                        data-testid={`expense-delete-${expense.id}`}
+                        onClick={() => setPendingDeleteId(expense.id)}
+                        type="button"
+                      >
+                        Excluir
+                      </button>
+                    )}
+                  </div>
+                </div>
+              );
+            })}
+          </div>
+        )}
       </div>
 
-      <div className="rounded-xl border border-slate-800 bg-slate-900/70 p-5 text-sm text-slate-200">
-        <p className="font-semibold text-white">Fluxo esperado</p>
-        <ul className="mt-2 space-y-1">
-          <li>• GET /expenses com paginação e filtros (mês, categoria, busca).</li>
-          <li>• PUT/DELETE inline com feedback otimista.</li>
-          <li>• Estado vazio amigável e skeleton enquanto carrega.</li>
-        </ul>
-      </div>
+      {editing && editForm && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 px-4 backdrop-blur">
+          <div className="w-full max-w-3xl rounded-2xl border border-slate-800 bg-slate-950 p-6 shadow-2xl shadow-emerald-500/10">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <p className="text-xs uppercase tracking-[0.25em] text-emerald-300/70">Editar</p>
+                <h3 className="text-xl font-semibold text-white">Atualize a despesa</h3>
+              </div>
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-1 text-xs text-slate-200 transition hover:border-emerald-400"
+                onClick={() => {
+                  setEditing(null);
+                  setEditForm(null);
+                }}
+                type="button"
+              >
+                Fechar
+              </button>
+            </div>
+
+            <form className="mt-4 grid gap-4 md:grid-cols-3" onSubmit={handleEditSubmit}>
+              <div>
+                <label className="text-sm font-semibold text-white" htmlFor="edit-amount">
+                  Valor
+                </label>
+                <input
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                  data-testid="edit-amount"
+                  id="edit-amount"
+                  inputMode="decimal"
+                  value={editForm.amount}
+                  onChange={(event) =>
+                    setEditForm((prev) => (prev ? { ...prev, amount: event.target.value } : prev))
+                  }
+                  onBlur={() => setEditErrors((prev) => ({ ...prev, ...validate(editForm) }))}
+                />
+                {editErrors.amount && <p className="mt-1 text-xs text-rose-300">{editErrors.amount}</p>}
+              </div>
+
+              <div>
+                <label className="text-sm font-semibold text-white" htmlFor="edit-date">
+                  Data
+                </label>
+                <input
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                  data-testid="edit-date"
+                  id="edit-date"
+                  type="date"
+                  value={editForm.date}
+                  onChange={(event) =>
+                    setEditForm((prev) => (prev ? { ...prev, date: event.target.value } : prev))
+                  }
+                  onBlur={() => setEditErrors((prev) => ({ ...prev, ...validate(editForm) }))}
+                />
+                {editErrors.date && <p className="mt-1 text-xs text-rose-300">{editErrors.date}</p>}
+              </div>
+
+              <div>
+                <label className="text-sm font-semibold text-white" htmlFor="edit-category">
+                  Categoria
+                </label>
+                <input
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                  data-testid="edit-category"
+                  id="edit-category"
+                  list="expense-categories"
+                  value={editForm.categoryInput}
+                  onChange={(event) =>
+                    setEditForm((prev) => (prev ? { ...prev, categoryInput: event.target.value } : prev))
+                  }
+                  onBlur={() => setEditErrors((prev) => ({ ...prev, ...validate(editForm) }))}
+                />
+                {editErrors.categoryInput && (
+                  <p className="mt-1 text-xs text-rose-300">{editErrors.categoryInput}</p>
+                )}
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {categories.slice(0, 4).map((category) => (
+                    <button
+                      key={category.id}
+                      className={`rounded-full border px-3 py-1 text-xs transition ${
+                        matchedEditCategory?.id === category.id
+                          ? "border-emerald-400/70 bg-emerald-400/10 text-emerald-100"
+                          : "border-slate-700 bg-slate-900/70 text-slate-200 hover:border-emerald-300/60"
+                      }`}
+                      onClick={(event) => {
+                        event.preventDefault();
+                        setEditForm((prev) => (prev ? { ...prev, categoryInput: category.label } : prev));
+                      }}
+                      type="button"
+                    >
+                      <span className="mr-1">{category.icon}</span>
+                      {category.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              <div className="md:col-span-2">
+                <label className="text-sm font-semibold text-white" htmlFor="edit-description">
+                  Descrição
+                </label>
+                <input
+                  className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-900/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                  data-testid="edit-description"
+                  id="edit-description"
+                  maxLength={80}
+                  value={editForm.description}
+                  onChange={(event) =>
+                    setEditForm((prev) => (prev ? { ...prev, description: event.target.value } : prev))
+                  }
+                  onBlur={() => setEditErrors((prev) => ({ ...prev, ...validate(editForm) }))}
+                />
+                {editErrors.description && <p className="mt-1 text-xs text-rose-300">{editErrors.description}</p>}
+              </div>
+
+              <div className="flex items-center gap-3">
+                <button
+                  className="rounded-lg border border-emerald-400/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-50 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-70"
+                  data-testid="edit-submit"
+                  type="submit"
+                  disabled={editStatus === "loading"}
+                >
+                  {editStatus === "loading" ? "Salvando..." : "Salvar edição"}
+                </button>
+                <button
+                  className="rounded-lg border border-slate-700 px-3 py-2 text-sm font-semibold text-slate-200 transition hover:border-rose-400"
+                  onClick={() => {
+                    setEditing(null);
+                    setEditForm(null);
+                  }}
+                  type="button"
+                >
+                  Cancelar
+                </button>
+              </div>
+            </form>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

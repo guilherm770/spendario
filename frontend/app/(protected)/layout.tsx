@@ -9,7 +9,7 @@ type NavItem = { label: string; href: string; badge?: string };
 
 const navItems: NavItem[] = [
   { label: "Dashboard", href: "/dashboard" },
-  { label: "Despesas", href: "/expenses", badge: "Em breve" },
+  { label: "Despesas", href: "/expenses" },
   { label: "Categorias", href: "/categories" },
   { label: "Onboarding", href: "/onboarding", badge: "Novo" },
 ];
