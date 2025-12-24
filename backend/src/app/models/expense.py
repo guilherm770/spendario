@@ -32,10 +32,11 @@ class Expense(Base):
         nullable=False,
         default=lambda: datetime.now(UTC),
     )
+    deleted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True, default=None)
 
     CURRENCY_CODE_LENGTH = 3
 
     __table_args__ = (
         CheckConstraint("amount > 0", name="amount_positive"),
-        CheckConstraint(func.length("currency") == CURRENCY_CODE_LENGTH, name="currency_code_length"),
+        CheckConstraint(func.length(currency) == CURRENCY_CODE_LENGTH, name="currency_code_length"),
     )

@@ -11,6 +11,8 @@ node_modules/
 .npm/
 pnpm-lock.yaml
 package-lock.json
+playwright-report/
+test-results/
 
 # Editors
 .DS_Store

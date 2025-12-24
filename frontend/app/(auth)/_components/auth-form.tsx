@@ -24,6 +24,7 @@ type FormState = {
   password: string;
   fullName: string;
 };
+type FormField = keyof FormState;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
@@ -52,6 +53,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
   const router = useRouter();
   const [form, setForm] = useState<FormState>({ email: "", password: "", fullName: "" });
   const [errors, setErrors] = useState<Partial<FormState>>({});
+  const [touched, setTouched] = useState<Partial<Record<FormField, boolean>>>({});
   const [serverError, setServerError] = useState("");
   const [successMessage, setSuccessMessage] = useState("");
   const [loading, setLoading] = useState(false);
@@ -76,22 +78,64 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
     [mode],
   );
 
+  const validateField = (field: FormField, state: FormState) => {
+    if (field === "email" && !emailRegex.test(state.email.trim())) {
+      return "Informe um e-mail válido.";
+    }
+
+    if (field === "password" && (!state.password || state.password.length < 8)) {
+      return "A senha precisa ter pelo menos 8 caracteres.";
+    }
+
+    if (field === "fullName" && mode === "register" && state.fullName.trim() && state.fullName.trim().length < 3) {
+      return "Use pelo menos 3 caracteres.";
+    }
+
+    return "";
+  };
+
   const validate = (state: FormState) => {
     const validationErrors: Partial<FormState> = {};
-
-    if (!emailRegex.test(state.email.trim())) {
-      validationErrors.email = "Informe um e-mail válido.";
-    }
-
-    if (!state.password || state.password.length < 8) {
-      validationErrors.password = "A senha precisa ter pelo menos 8 caracteres.";
-    }
-
-    if (mode === "register" && state.fullName.trim() && state.fullName.trim().length < 3) {
-      validationErrors.fullName = "Use pelo menos 3 caracteres.";
-    }
-
+    (["email", "password", "fullName"] as FormField[]).forEach((field) => {
+      const message = validateField(field, state);
+      if (message) {
+        validationErrors[field] = message;
+      }
+    });
     return validationErrors;
+  };
+
+  const handleBlur = (field: FormField) => {
+    setTouched((prev) => ({ ...prev, [field]: true }));
+    setErrors((prev) => {
+      const nextErrors = { ...prev };
+      const message = validateField(field, form);
+      if (message) {
+        nextErrors[field] = message;
+      } else {
+        delete nextErrors[field];
+      }
+      return nextErrors;
+    });
+  };
+
+  const updateField = (field: FormField, value: string) => {
+    const nextState = { ...form, [field]: value };
+
+    setForm(nextState);
+    setServerError("");
+    setSuccessMessage("");
+    setTouched((prev) => ({ ...prev, [field]: true }));
+    setErrors((prev) => {
+      const nextErrors = { ...prev };
+      const message = validateField(field, nextState);
+      if (message) {
+        nextErrors[field] = message;
+      } else {
+        delete nextErrors[field];
+      }
+      return nextErrors;
+    });
   };
 
   const handleSubmit = async (event: FormEvent<HTMLFormElement>) => {
@@ -100,6 +144,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
     setSuccessMessage("");
 
     const validationErrors = validate(form);
+    setTouched({ email: true, password: true, fullName: true });
     if (Object.keys(validationErrors).length > 0) {
       setErrors(validationErrors);
       return;
@@ -142,7 +187,7 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
       setSuccessMessage(mode === "login" ? "Login realizado! Redirecionando..." : "Conta criada! Entrando...");
 
       setTimeout(() => {
-        router.push("/");
+        router.push("/dashboard");
       }, 600);
     } catch (error) {
       setServerError(error instanceof Error ? error.message : "Falha ao enviar o formulário. Tente novamente.");
@@ -182,12 +227,13 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
             disabled={loading}
             id="email"
             name="email"
-            onChange={(event) => setForm((prev) => ({ ...prev, email: event.target.value }))}
+            onBlur={() => handleBlur("email")}
+            onChange={(event) => updateField("email", event.target.value)}
             placeholder="seu@email.com"
             type="email"
             value={form.email}
           />
-          {errors.email && <p className="text-sm text-rose-200">{errors.email}</p>}
+          {touched.email && errors.email && <p className="text-sm text-rose-200">{errors.email}</p>}
         </div>
 
         {mode === "register" && (
@@ -201,12 +247,13 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
               disabled={loading}
               id="fullName"
               name="fullName"
-              onChange={(event) => setForm((prev) => ({ ...prev, fullName: event.target.value }))}
+              onBlur={() => handleBlur("fullName")}
+              onChange={(event) => updateField("fullName", event.target.value)}
               placeholder="Como prefere ser chamado"
               type="text"
               value={form.fullName}
             />
-            {errors.fullName && <p className="text-sm text-rose-200">{errors.fullName}</p>}
+            {touched.fullName && errors.fullName && <p className="text-sm text-rose-200">{errors.fullName}</p>}
           </div>
         )}
 
@@ -221,12 +268,13 @@ export function AuthForm({ mode }: { mode: AuthMode }) {
             id="password"
             minLength={8}
             name="password"
-            onChange={(event) => setForm((prev) => ({ ...prev, password: event.target.value }))}
+            onBlur={() => handleBlur("password")}
+            onChange={(event) => updateField("password", event.target.value)}
             placeholder="Mínimo de 8 caracteres"
             type="password"
             value={form.password}
           />
-          {errors.password && <p className="text-sm text-rose-200">{errors.password}</p>}
+          {touched.password && errors.password && <p className="text-sm text-rose-200">{errors.password}</p>}
         </div>
 
         <button

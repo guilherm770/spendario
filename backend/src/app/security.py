@@ -2,8 +2,9 @@ from __future__ import annotations
 
 import uuid
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, cast
 
+import passlib.handlers.bcrypt as bcrypt_module
 from jose import jwt
 from passlib.context import CryptContext
 
@@ -14,6 +15,17 @@ pwd_context = CryptContext(
     schemes=["bcrypt"],
     deprecated="auto",
 )
+# Bcrypt >=4 raises on secrets longer than 72 bytes; passlib probes with long inputs, so we truncate.
+_original_calc_checksum = bcrypt_module._BcryptBackend._calc_checksum
+
+
+def _truncating_calc_checksum(self: bcrypt_module._BcryptBackend, secret: bytes) -> str:
+    if len(secret) > MAX_PASSWORD_BYTES:
+        secret = secret[:MAX_PASSWORD_BYTES]
+    return cast(str, _original_calc_checksum(self, secret))
+
+
+bcrypt_module._BcryptBackend._calc_checksum = _truncating_calc_checksum
 
 
 def _truncate_password(password: str) -> str:

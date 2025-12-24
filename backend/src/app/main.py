@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.config import settings
 from app.database import lifespan
-from app.routers import auth
+from app.routers import auth, expenses
 
 app = FastAPI(title="Spendario API", version="0.1.0", lifespan=lifespan)
 
@@ -22,3 +22,4 @@ async def health() -> dict[str, str]:
 
 
 app.include_router(auth.router)
+app.include_router(expenses.router)

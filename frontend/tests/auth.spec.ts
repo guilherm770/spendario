@@ -36,6 +36,33 @@ test.describe("Autenticação", () => {
     await expect.poll(async () => page.evaluate(() => localStorage.getItem("spendario.token"))).toBe("token-123");
   });
 
+  test("login feliz exibe sucesso e persiste token", async ({ page }) => {
+    await page.route(`${apiBase}/auth/login`, async (route) =>
+      route.fulfill({
+        status: 200,
+        contentType: "application/json",
+        body: JSON.stringify({
+          access_token: "token-login",
+          token_type: "bearer",
+          user: {
+            id: "abc",
+            email: "usuario@spendario.dev",
+            full_name: null,
+            created_at: new Date().toISOString(),
+          },
+        }),
+      }),
+    );
+
+    await page.goto("/login");
+    await page.getByLabel("E-mail").fill("usuario@spendario.dev");
+    await page.getByLabel("Senha").fill("senha-muito-segura");
+    await page.getByRole("button", { name: "Entrar" }).click();
+
+    await expect(page.getByRole("status")).toContainText("Login realizado! Redirecionando...");
+    await expect.poll(async () => page.evaluate(() => localStorage.getItem("spendario.token"))).toBe("token-login");
+  });
+
   test("login exibe erro 401 vindo da API", async ({ page }) => {
     await page.route(`${apiBase}/auth/login`, (route) =>
       route.fulfill({
@@ -51,8 +78,19 @@ test.describe("Autenticação", () => {
     const submitButton = page.getByRole("button", { name: "Entrar" });
     await submitButton.click();
 
-    await expect(page.getByRole("alert")).toContainText("Invalid credentials");
+    await expect(page.getByText("Invalid credentials")).toBeVisible();
     await expect(submitButton).toBeEnabled();
+  });
+
+  test("validação inline mostra mensagens sem submeter", async ({ page }) => {
+    await page.goto("/register");
+    await page.getByLabel("E-mail").fill("email-invalido");
+    await page.getByLabel("Senha").fill("123");
+    await page.getByLabel("Nome completo (opcional)").fill("Ab");
+
+    await expect(page.getByText("Informe um e-mail válido.")).toBeVisible();
+    await expect(page.getByText("A senha precisa ter pelo menos 8 caracteres.")).toBeVisible();
+    await expect(page.getByText("Use pelo menos 3 caracteres.")).toBeVisible();
   });
 
   test("registro exibe erro 400 amigável", async ({ page }) => {
@@ -69,6 +107,6 @@ test.describe("Autenticação", () => {
     await page.getByLabel("Senha").fill("senha-segura");
     await page.getByRole("button", { name: "Criar conta" }).click();
 
-    await expect(page.getByRole("alert")).toContainText("Email already registered");
+    await expect(page.getByText("Email already registered")).toBeVisible();
   });
 });
