@@ -17,11 +17,16 @@ const navItems: NavItem[] = [
 export default function ProtectedLayout({ children }: { children: ReactNode }) {
   const router = useRouter();
   const pathname = usePathname();
-  const [authorized, setAuthorized] = useState(false);
-  const [checking, setChecking] = useState(true);
+  const bypassAuth = process.env.NEXT_PUBLIC_E2E_BYPASS_AUTH === "1";
+  const [authorized, setAuthorized] = useState(bypassAuth);
+  const [checking, setChecking] = useState(!bypassAuth);
   const [mobileOpen, setMobileOpen] = useState(false);
 
   useEffect(() => {
+    if (bypassAuth) {
+      return;
+    }
+
     const token = localStorage.getItem("spendario.token");
     if (!token) {
       router.replace("/login");
@@ -32,7 +37,7 @@ export default function ProtectedLayout({ children }: { children: ReactNode }) {
 
     setAuthorized(true);
     setChecking(false);
-  }, [router]);
+  }, [router, bypassAuth]);
 
   const activeMap = useMemo(
     () =>

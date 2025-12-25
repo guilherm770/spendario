@@ -1,6 +1,6 @@
 "use client";
 
-import { FormEvent, useEffect, useMemo, useState } from "react";
+import { FormEvent, useCallback, useEffect, useMemo, useState } from "react";
 
 type CategoryOption = {
   id: number;
@@ -29,9 +29,11 @@ type FormState = {
 type FormErrors = Partial<Record<keyof FormState, string>>;
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
-const today = new Date().toISOString().split("T")[0];
+const today = new Intl.DateTimeFormat("sv-SE").format(new Date()); // yyyy-mm-dd para input date
+const PAGE_SIZE = 50;
+const CATEGORY_STORAGE_KEY = "spendario.categories";
 
-const categories: CategoryOption[] = [
+const defaultCategories: CategoryOption[] = [
   { id: 1, label: "Alimentação", icon: "🍽️", keywords: ["mercado", "restaurante", "comida"] },
   { id: 2, label: "Transporte", icon: "🚌", keywords: ["uber", "combustível", "gasolina"] },
   { id: 3, label: "Moradia", icon: "🏠", keywords: ["aluguel", "condomínio", "contas"] },
@@ -51,17 +53,6 @@ const categories: CategoryOption[] = [
 
 const normalize = (value: string) => value.trim().toLowerCase();
 
-const resolveCategory = (input: string): CategoryOption | undefined => {
-  const normalized = normalize(input);
-  if (!normalized) return undefined;
-  return categories.find(
-    (item) =>
-      normalize(item.label) === normalized ||
-      item.keywords.some((keyword) => normalize(keyword) === normalized) ||
-      normalize(item.label).includes(normalized),
-  );
-};
-
 const formatCurrency = (amount: string, currency: string) => {
   const value = Number(amount);
   if (Number.isNaN(value)) return `${currency} ${amount}`;
@@ -72,12 +63,11 @@ const formatCurrency = (amount: string, currency: string) => {
   }
 };
 
-const toFormState = (expense: Expense): FormState => ({
-  amount: String(expense.amount),
-  description: expense.description,
-  date: expense.transaction_date,
-  categoryInput: categories.find((category) => category.id === expense.category_id)?.label ?? "",
-  currency: expense.currency,
+const toOption = (category: { id: number; name: string; desc: string }, nextIdSeed: number): CategoryOption => ({
+  id: category.id || nextIdSeed,
+  label: category.name,
+  icon: "🧩",
+  keywords: [normalize(category.name)],
 });
 
 export default function ExpensesPage() {
@@ -92,9 +82,13 @@ export default function ExpensesPage() {
   const [status, setStatus] = useState<"idle" | "loading" | "success" | "error">("idle");
   const [serverMessage, setServerMessage] = useState("");
 
+  const [categoryOptions, setCategoryOptions] = useState<CategoryOption[]>(defaultCategories);
+
   const [list, setList] = useState<Expense[]>([]);
   const [listStatus, setListStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [listMessage, setListMessage] = useState("");
+  const [page, setPage] = useState(1);
+  const [total, setTotal] = useState(0);
 
   const [editing, setEditing] = useState<Expense | null>(null);
   const [editForm, setEditForm] = useState<FormState | null>(null);
@@ -102,10 +96,65 @@ export default function ExpensesPage() {
   const [editStatus, setEditStatus] = useState<"idle" | "loading" | "error">("idle");
   const [pendingDeleteId, setPendingDeleteId] = useState<string | null>(null);
 
-  const matchedCategory = useMemo(() => resolveCategory(form.categoryInput), [form.categoryInput]);
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem(CATEGORY_STORAGE_KEY);
+    if (!saved) {
+      setCategoryOptions(defaultCategories);
+      return;
+    }
+    try {
+      const parsed = JSON.parse(saved) as { id: number; name: string; desc: string }[];
+      const seen = new Set<string>();
+      const merged: CategoryOption[] = [];
+
+      parsed.forEach((cat, index) => {
+        const match = defaultCategories.find(
+          (defaultCat) => normalize(defaultCat.label) === normalize(cat.name),
+        );
+        const option = match ?? toOption(cat, 10_000 + index);
+        const key = normalize(option.label);
+        if (!seen.has(key)) {
+          seen.add(key);
+          merged.push(option);
+        }
+      });
+
+      setCategoryOptions(merged.length > 0 ? merged : defaultCategories);
+    } catch {
+      setCategoryOptions(defaultCategories);
+    }
+  }, []);
+
+  const resolveCategory = useCallback(
+    (input: string): CategoryOption | undefined => {
+      const normalized = normalize(input);
+      if (!normalized) return undefined;
+      return categoryOptions.find(
+        (item) =>
+          normalize(item.label) === normalized ||
+          item.keywords.some((keyword) => normalize(keyword) === normalized) ||
+          normalize(item.label).includes(normalized),
+      );
+    },
+    [categoryOptions],
+  );
+
+  const matchedCategory = useMemo(() => resolveCategory(form.categoryInput), [form.categoryInput, resolveCategory]);
   const matchedEditCategory = useMemo(
     () => resolveCategory(editForm?.categoryInput ?? ""),
-    [editForm?.categoryInput],
+    [editForm?.categoryInput, resolveCategory],
+  );
+
+  const toFormState = useCallback(
+    (expense: Expense): FormState => ({
+      amount: String(expense.amount),
+      description: expense.description,
+      date: expense.transaction_date,
+      categoryInput: categoryOptions.find((category) => category.id === expense.category_id)?.label ?? "",
+      currency: expense.currency,
+    }),
+    [categoryOptions],
   );
 
   const validate = (state: FormState): FormErrors => {
@@ -131,9 +180,12 @@ export default function ExpensesPage() {
     return next;
   };
 
-  const token = () => (typeof window !== "undefined" ? localStorage.getItem("spendario.token") : null);
+  const token = () => {
+    if (process.env.NEXT_PUBLIC_E2E_BYPASS_AUTH === "1") return "test-token";
+    return typeof window !== "undefined" ? localStorage.getItem("spendario.token") : null;
+  };
 
-  const fetchList = async () => {
+  const fetchList = async (pageToLoad: number) => {
     const auth = token();
     if (!auth) {
       setListStatus("error");
@@ -143,14 +195,17 @@ export default function ExpensesPage() {
     setListStatus("loading");
     setListMessage("");
     try {
-      const response = await fetch(`${API_BASE_URL}/expenses`, {
+      const response = await fetch(`${API_BASE_URL}/expenses?page=${pageToLoad}&page_size=${PAGE_SIZE}`, {
         headers: { Authorization: `Bearer ${auth}` },
       });
       if (!response.ok) {
         throw new Error("Falha ao carregar despesas");
       }
-      const data = (await response.json()) as { items: Expense[] };
+      const data = (await response.json()) as { items: Expense[]; total?: number; page?: number; page_size?: number };
+      const totalItems = typeof data.total === "number" ? data.total : data.items?.length ?? 0;
+
       setList(data.items || []);
+      setTotal(totalItems);
       setListStatus("loaded");
     } catch (error) {
       setListStatus("error");
@@ -159,9 +214,9 @@ export default function ExpensesPage() {
   };
 
   useEffect(() => {
-    fetchList().catch(() => setListStatus("error"));
+    fetchList(page).catch(() => setListStatus("error"));
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  }, [page]);
 
   const updateField = (field: keyof FormState, value: string) => {
     setForm((prev) => ({ ...prev, [field]: value }));
@@ -231,6 +286,7 @@ export default function ExpensesPage() {
         categoryInput: "",
       }));
       setList((prev) => [created, ...prev]);
+      setTotal((prev) => prev + 1);
     } catch (error) {
       setStatus("error");
       setServerMessage(error instanceof Error ? error.message : "Erro inesperado. Tente novamente.");
@@ -299,7 +355,7 @@ export default function ExpensesPage() {
       setEditing(null);
       setEditForm(null);
       setEditStatus("idle");
-      fetchList().catch(() => setListStatus("error"));
+      fetchList(page).catch(() => setListStatus("error"));
     } catch (error) {
       setEditStatus("error");
       setListMessage(error instanceof Error ? error.message : "Erro ao salvar alteração.");
@@ -321,19 +377,34 @@ export default function ExpensesPage() {
       if (!response.ok && response.status !== 204) {
         throw new Error("Não foi possível excluir agora.");
       }
+      const nextTotal = Math.max(0, total - 1);
       setList((prev) => prev.filter((item) => item.id !== expense.id));
+      setTotal(nextTotal);
       setPendingDeleteId(null);
-      fetchList().catch(() => setListStatus("error"));
+      const maxPage = Math.max(1, Math.ceil(nextTotal / PAGE_SIZE));
+      if (page > maxPage) {
+        setPage(maxPage);
+      } else {
+        fetchList(page).catch(() => setListStatus("error"));
+      }
     } catch (error) {
       setListMessage(error instanceof Error ? error.message : "Erro ao excluir.");
       setPendingDeleteId(null);
     }
   };
 
-  const listEmpty = listStatus === "loaded" && list.length === 0;
+  const maxPage = Math.max(1, Math.ceil(total / PAGE_SIZE));
+  const listEmpty = listStatus === "loaded" && total === 0;
+  const rangeStart = total === 0 ? 0 : (page - 1) * PAGE_SIZE + 1;
+  const rangeEnd = total === 0 ? 0 : Math.min(total, page * PAGE_SIZE);
+
+  const goToPage = (nextPage: number) => {
+    if (nextPage < 1 || nextPage > maxPage || listStatus === "loading") return;
+    setPage(nextPage);
+  };
 
   return (
-    <div className="space-y-6">
+    <div className="mx-auto flex w-full max-w-5xl flex-col space-y-6">
       <div className="flex flex-wrap items-start justify-between gap-3">
         <div>
           <p className="text-xs uppercase tracking-[0.25em] text-emerald-300/70">Despesas</p>
@@ -346,121 +417,130 @@ export default function ExpensesPage() {
       </div>
 
       <form
-        className="grid gap-4 rounded-2xl border border-slate-800 bg-slate-900/70 p-6 shadow-lg shadow-emerald-500/10 md:grid-cols-4"
+        className="space-y-4 rounded-3xl border border-slate-800/80 bg-slate-900/80 p-6 shadow-xl shadow-emerald-500/10"
         onSubmit={handleSubmit}
       >
-        <div className="md:col-span-1">
-          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="amount">
-            Valor
-            <span className="text-xs font-normal text-slate-400">Rápido: 120,50</span>
-          </label>
-          <input
-            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
-            data-testid="expense-amount"
-            id="amount"
-            inputMode="decimal"
-            maxLength={12}
-            placeholder="0,00"
-            value={form.amount}
-            onChange={(event) => updateField("amount", event.target.value)}
-            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
-          />
-          {errors.amount && <p className="mt-1 text-xs text-rose-300">{errors.amount}</p>}
-        </div>
+        <div className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-950/50 p-4">
+          <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+            <label className="text-sm font-semibold text-white" htmlFor="amount">
+              <span className="flex items-center justify-between">
+                Valor <span className="text-xs font-normal text-slate-400">Rápido: 120,50</span>
+              </span>
+              <input
+                className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-white outline-none transition focus:-translate-y-0.5 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                data-testid="expense-amount"
+                id="amount"
+                inputMode="decimal"
+                maxLength={12}
+                placeholder="0,00"
+                value={form.amount}
+                onChange={(event) => updateField("amount", event.target.value)}
+                onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+              />
+              {errors.amount && <p className="mt-1 text-xs text-rose-300">{errors.amount}</p>}
+            </label>
 
-        <div className="md:col-span-1">
-          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="date">
-            Data
-            <span className="text-xs font-normal text-slate-400">Default: hoje</span>
+            <label className="text-sm font-semibold text-white" htmlFor="date">
+              <span className="flex items-center justify-between">
+                Data <span className="text-xs font-normal text-slate-400">Default: hoje</span>
+              </span>
+              <input
+                className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-white outline-none transition focus:-translate-y-0.5 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                data-testid="expense-date"
+                id="date"
+                type="date"
+                value={form.date}
+                onChange={(event) => updateField("date", event.target.value)}
+                onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+              />
+            {errors.date && <p className="mt-1 text-xs text-rose-300">{errors.date}</p>}
           </label>
-          <input
-            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
-            data-testid="expense-date"
-            id="date"
-            type="date"
-            value={form.date}
-            onChange={(event) => updateField("date", event.target.value)}
-            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
-          />
-          {errors.date && <p className="mt-1 text-xs text-rose-300">{errors.date}</p>}
-        </div>
 
-        <div className="md:col-span-1">
-          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="category">
-            Categoria
-            <span className="text-xs font-normal text-slate-400">Autocomplete</span>
-          </label>
-          <input
-            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
-            data-testid="expense-category"
-            id="category"
-            list="expense-categories"
-            placeholder="Ex: Alimentação"
-            value={form.categoryInput}
-            onChange={(event) => updateField("categoryInput", event.target.value)}
-            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
-          />
-          <datalist id="expense-categories">
-            {categories.map((category) => (
-              <option key={category.id} value={category.label}>
-                {category.label}
-              </option>
-            ))}
-          </datalist>
-          {errors.categoryInput && <p className="mt-1 text-xs text-rose-300">{errors.categoryInput}</p>}
-          <div className="mt-2 flex flex-wrap gap-2">
-            {categories.slice(0, 5).map((category) => (
-              <button
-                key={category.id}
-                className={`rounded-full border px-3 py-1 text-xs transition ${
-                  matchedCategory?.id === category.id
-                    ? "border-emerald-400/70 bg-emerald-400/10 text-emerald-100"
-                    : "border-slate-700 bg-slate-900/70 text-slate-200 hover:border-emerald-300/60"
-                }`}
-                onClick={(event) => {
-                  event.preventDefault();
-                  updateField("categoryInput", category.label);
-                }}
-                type="button"
-              >
-                <span className="mr-1">{category.icon}</span>
-                {category.label}
-              </button>
-            ))}
+            <label className="text-sm font-semibold text-white" htmlFor="category">
+              <span className="flex items-center justify-between">
+                Categoria <span className="text-xs font-normal text-slate-400">Autocomplete</span>
+              </span>
+              <input
+                className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-white outline-none transition focus:-translate-y-0.5 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                data-testid="expense-category"
+                id="category"
+                list="expense-categories"
+                placeholder="Ex: Alimentação"
+                value={form.categoryInput}
+                onChange={(event) => updateField("categoryInput", event.target.value)}
+                onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+              />
+              <datalist id="expense-categories">
+                {categoryOptions.map((category) => (
+                  <option key={category.id} value={category.label}>
+                    {category.label}
+                  </option>
+                ))}
+              </datalist>
+              {errors.categoryInput && <p className="mt-1 text-xs text-rose-300">{errors.categoryInput}</p>}
+            </label>
+          </div>
+
+          <div>
+            <label className="text-sm font-semibold text-white" htmlFor="description">
+              <span className="flex items-center justify-between">
+                Descrição <span className="text-xs font-normal text-slate-400 whitespace-nowrap">Opcional curta</span>
+              </span>
+              <input
+                className="mt-2 w-full rounded-lg border border-slate-800 bg-slate-900 px-3 py-2 text-white outline-none transition focus:-translate-y-0.5 focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
+                data-testid="expense-description"
+                id="description"
+                maxLength={80}
+                placeholder="Ex: Mercado da semana"
+                value={form.description}
+                onChange={(event) => updateField("description", event.target.value)}
+                onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
+              />
+              {errors.description && <p className="mt-1 text-xs text-rose-300">{errors.description}</p>}
+            </label>
+          </div>
+
+          <div className="rounded-xl border border-slate-800 bg-slate-950/60 p-3 shadow-inner shadow-emerald-500/5">
+            <p className="text-xs font-semibold uppercase tracking-[0.2em] text-emerald-300/70">Sugestões</p>
+            <div className="mt-2 flex flex-wrap gap-2">
+              {categoryOptions.map((category) => (
+                <button
+                  key={category.id}
+                  className={`rounded-full border px-3 py-1 text-xs transition ${
+                    matchedCategory?.id === category.id
+                      ? "border-emerald-400/70 bg-emerald-400/10 text-emerald-100 shadow shadow-emerald-500/10"
+                      : "border-slate-700 bg-slate-900/70 text-slate-200 hover:border-emerald-300/60"
+                  }`}
+                  onClick={(event) => {
+                    event.preventDefault();
+                    updateField("categoryInput", category.label);
+                  }}
+                  type="button"
+                >
+                  <span className="mr-1">{category.icon}</span>
+                  {category.label}
+                </button>
+              ))}
+            </div>
           </div>
         </div>
 
-        <div className="md:col-span-1">
-          <label className="flex items-center justify-between text-sm font-semibold text-white" htmlFor="description">
-            Descrição
-            <span className="text-xs font-normal text-slate-400">Opcional curta</span>
-          </label>
-          <input
-            className="mt-2 w-full rounded-lg border border-slate-700 bg-slate-950/70 px-3 py-2 text-white outline-none transition focus:border-emerald-400 focus:ring-2 focus:ring-emerald-500/20"
-            data-testid="expense-description"
-            id="description"
-            maxLength={80}
-            placeholder="Ex: Mercado da semana"
-            value={form.description}
-            onChange={(event) => updateField("description", event.target.value)}
-            onBlur={() => setErrors((prev) => ({ ...prev, ...validate(form) }))}
-          />
-          {errors.description && <p className="mt-1 text-xs text-rose-300">{errors.description}</p>}
-
-          <div className="mt-4 flex flex-wrap items-center gap-2">
-            <button
-              className="flex items-center justify-center gap-2 rounded-lg border border-emerald-400/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-50 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-70"
-              data-testid="expense-submit"
-              type="submit"
-              disabled={status === "loading"}
-            >
-              {status === "loading" ? "Salvando..." : "Salvar (Enter)"}
-            </button>
-            <span className="text-xs text-slate-400">Shift + Tab + Enter também envia.</span>
+        <div className="flex flex-col gap-3 rounded-2xl border border-slate-800 bg-slate-950/50 p-4 sm:max-w-sm">
+          <div className="rounded-lg border border-slate-800 bg-slate-900/60 p-3 text-sm text-slate-200 shadow-inner shadow-emerald-500/5">
+            <p className="font-semibold text-white">Atalho: Enter envia</p>
+            <p className="text-xs text-slate-400">Shift + Tab + Enter também envia.</p>
           </div>
+          <button
+            className="flex items-center justify-center gap-2 rounded-lg border border-emerald-400/60 bg-emerald-500/10 px-4 py-2 text-sm font-semibold text-emerald-50 transition hover:-translate-y-0.5 hover:shadow-lg hover:shadow-emerald-500/20 disabled:cursor-not-allowed disabled:opacity-70"
+            data-testid="expense-submit"
+            type="submit"
+            disabled={status === "loading"}
+          >
+            {status === "loading" ? "Salvando..." : "Salvar (Enter)"}
+          </button>
           {serverMessage && (
             <div
-              className={`mt-3 rounded-lg border px-3 py-2 text-xs ${
+              className={`rounded-lg border px-3 py-2 text-xs ${
                 status === "success"
                   ? "border-emerald-400/60 bg-emerald-400/10 text-emerald-50"
                   : "border-amber-400/60 bg-amber-500/10 text-amber-50"
@@ -481,7 +561,33 @@ export default function ExpensesPage() {
             <h2 className="text-xl font-semibold text-white">Edição inline e exclusão</h2>
             <p className="text-sm text-slate-300">Clique em editar para abrir o drawer e salvar rápido.</p>
           </div>
-          {listStatus === "loading" && <span className="text-xs text-slate-400">Carregando...</span>}
+          <div className="flex flex-col items-end gap-2 text-xs text-slate-300 md:flex-row md:items-center">
+            <div data-testid="pagination-info" className="text-right md:text-left">
+              {total > 0 ? `Mostrando ${rangeStart}-${rangeEnd} de ${total}` : "Nenhuma despesa carregada"}
+              <span className="ml-2 text-slate-500">| Página {page} de {maxPage}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                data-testid="pagination-prev"
+                disabled={page === 1 || listStatus === "loading"}
+                onClick={() => goToPage(page - 1)}
+                type="button"
+              >
+                Anterior
+              </button>
+              <button
+                className="rounded-lg border border-slate-700 px-3 py-1.5 text-[11px] font-semibold text-slate-200 transition hover:border-emerald-300 disabled:cursor-not-allowed disabled:opacity-50"
+                data-testid="pagination-next"
+                disabled={page >= maxPage || listStatus === "loading"}
+                onClick={() => goToPage(page + 1)}
+                type="button"
+              >
+                Próxima
+              </button>
+            </div>
+            {listStatus === "loading" && <span className="text-[11px] text-slate-400">Carregando...</span>}
+          </div>
         </div>
 
         {listMessage && (
@@ -496,10 +602,27 @@ export default function ExpensesPage() {
           </div>
         )}
 
+        {listStatus === "loading" && (
+          <div className="space-y-2" data-testid="expenses-skeleton">
+            {Array.from({ length: 3 }).map((_, index) => (
+              <div
+                key={index}
+                className="flex animate-pulse items-center justify-between gap-3 rounded-xl border border-slate-800 bg-slate-950/40 px-4 py-3"
+              >
+                <div className="space-y-2">
+                  <div className="h-4 w-40 rounded bg-slate-800" />
+                  <div className="h-3 w-56 rounded bg-slate-800" />
+                </div>
+                <div className="h-8 w-28 rounded bg-slate-800" />
+              </div>
+            ))}
+          </div>
+        )}
+
         {listStatus === "loaded" && list.length > 0 && (
           <div className="space-y-2">
             {list.map((expense) => {
-              const categoryLabel = categories.find((category) => category.id === expense.category_id)?.label;
+              const categoryLabel = categoryOptions.find((category) => category.id === expense.category_id)?.label;
               return (
                 <div
                   key={expense.id}
@@ -634,7 +757,7 @@ export default function ExpensesPage() {
                   <p className="mt-1 text-xs text-rose-300">{editErrors.categoryInput}</p>
                 )}
                 <div className="mt-2 flex flex-wrap gap-2">
-                  {categories.slice(0, 4).map((category) => (
+                  {categoryOptions.slice(0, 4).map((category) => (
                     <button
                       key={category.id}
                       className={`rounded-full border px-3 py-1 text-xs transition ${

@@ -11,6 +11,11 @@ const seedSession = async (page: Page) => {
 };
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:8000";
+const corsHeaders = {
+  "access-control-allow-origin": "*",
+  "access-control-allow-headers": "*",
+  "access-control-allow-methods": "*",
+};
 
 const mockCreateExpense = async (route: Route) => {
   const request = route.request();
@@ -26,6 +31,7 @@ const mockCreateExpense = async (route: Route) => {
   await route.fulfill({
     status: 201,
     contentType: "application/json",
+    headers: corsHeaders,
     body: JSON.stringify({
       id: "exp-123",
       user_id: "user-1",
@@ -46,19 +52,36 @@ const createSample = () => [
   },
 ];
 
+const createManyExpenses = (total: number) =>
+  Array.from({ length: total }).map((_, index) => {
+    const id = index + 1;
+    return {
+      id: `exp-${id}`,
+      amount: (100 + id).toFixed(2),
+      currency: "BRL",
+      description: `Despesa ${id}`,
+      transaction_date: "2024-01-01",
+      category_id: ((id % 5) + 1) as number,
+    };
+  });
+
 test.describe("Formulário rápido de despesa", () => {
   test.beforeEach(async ({ page }) => {
     await seedSession(page);
   });
 
   test("envia despesa pelo Enter com feedback rápido", async ({ page }) => {
-    await page.route(`${API_BASE}/expenses*`, async (route) => {
+    await page.route("**/expenses**", async (route) => {
       const method = route.request().method();
       if (route.request().resourceType() === "document") return route.continue();
+      if (method === "OPTIONS") {
+        return route.fulfill({ status: 204, headers: corsHeaders, body: "" });
+      }
       if (method === "GET") {
         return route.fulfill({
           status: 200,
           contentType: "application/json",
+          headers: corsHeaders,
           body: JSON.stringify({ items: [] }),
         });
       }
@@ -81,12 +104,17 @@ test.describe("Formulário rápido de despesa", () => {
   });
 
   test("mostra validação inline quando campos estão vazios", async ({ page }) => {
-    await page.route(`${API_BASE}/expenses*`, async (route) => {
+    await page.route("**/expenses**", async (route) => {
       if (route.request().resourceType() === "document") return route.continue();
-      if (route.request().method() === "GET") {
+      const method = route.request().method();
+      if (method === "OPTIONS") {
+        return route.fulfill({ status: 204, headers: corsHeaders, body: "" });
+      }
+      if (method === "GET") {
         return route.fulfill({
           status: 200,
           contentType: "application/json",
+          headers: corsHeaders,
           body: JSON.stringify({ items: [] }),
         });
       }
@@ -104,13 +132,17 @@ test.describe("Formulário rápido de despesa", () => {
 
   test("edita despesa inline e reflete na lista", async ({ page }) => {
     let expenses = createSample();
-    await page.route(`${API_BASE}/expenses*`, async (route) => {
+    await page.route("**/expenses**", async (route) => {
       if (route.request().resourceType() === "document") return route.continue();
       const method = route.request().method();
+      if (method === "OPTIONS") {
+        return route.fulfill({ status: 204, headers: corsHeaders, body: "" });
+      }
       if (method === "GET") {
         return route.fulfill({
           status: 200,
           contentType: "application/json",
+          headers: corsHeaders,
           body: JSON.stringify({ items: expenses }),
         });
       }
@@ -123,6 +155,7 @@ test.describe("Formulário rápido de despesa", () => {
         return route.fulfill({
           status: 200,
           contentType: "application/json",
+          headers: corsHeaders,
           body: JSON.stringify({
             ...expenses.find((item) => item.id === "exp-1"),
             ...payload,
@@ -152,20 +185,24 @@ test.describe("Formulário rápido de despesa", () => {
 
   test("exclui despesa com confirmação", async ({ page }) => {
     let expenses = createSample();
-    await page.route(`${API_BASE}/expenses*`, async (route) => {
+    await page.route("**/expenses**", async (route) => {
       if (route.request().resourceType() === "document") return route.continue();
       const method = route.request().method();
+      if (method === "OPTIONS") {
+        return route.fulfill({ status: 204, headers: corsHeaders, body: "" });
+      }
       if (method === "GET") {
         return route.fulfill({
           status: 200,
           contentType: "application/json",
+          headers: corsHeaders,
           body: JSON.stringify({ items: expenses }),
         });
       }
       if (method === "DELETE") {
         expect(route.request().url()).toContain("exp-1");
         expenses = expenses.filter((item) => item.id !== "exp-1");
-        return route.fulfill({ status: 204, body: "" });
+        return route.fulfill({ status: 204, headers: corsHeaders, body: "" });
       }
       return route.continue();
     });
@@ -179,5 +216,45 @@ test.describe("Formulário rápido de despesa", () => {
     await deletePromise;
 
     await expect(page.getByTestId("expense-row-exp-1")).toHaveCount(0, { timeout: 10_000 });
+  });
+
+  test("lista paginada carrega próxima página e mostra totais", async ({ page }) => {
+    const totalItems = 55;
+    const sample = createManyExpenses(totalItems);
+
+    await page.route("**/expenses**", async (route) => {
+      if (route.request().resourceType() === "document") return route.continue();
+      const method = route.request().method();
+      if (method === "OPTIONS") {
+        return route.fulfill({ status: 204, headers: corsHeaders, body: "" });
+      }
+      if (method === "GET") {
+        const url = new URL(route.request().url());
+        const currentPage = Number(url.searchParams.get("page") ?? "1");
+        const pageSize = Number(url.searchParams.get("page_size") ?? "50");
+        const start = (currentPage - 1) * pageSize;
+        const items = sample.slice(start, start + pageSize);
+        return route.fulfill({
+          status: 200,
+          contentType: "application/json",
+          headers: corsHeaders,
+          body: JSON.stringify({ items, total: totalItems, page: currentPage, page_size: pageSize }),
+        });
+      }
+      return route.continue();
+    });
+
+    await page.goto("/expenses");
+
+    await expect(page.getByTestId("pagination-info")).toContainText("Mostrando 1-50 de 55");
+    await expect(page.getByTestId("pagination-info")).toContainText("Página 1 de 2");
+
+    const nextResponse = page.waitForResponse((resp) => resp.url().includes("page=2") && resp.ok());
+    await page.getByTestId("pagination-next").click();
+    await nextResponse;
+
+    await expect(page.getByTestId("pagination-info")).toContainText("Mostrando 51-55 de 55");
+    await expect(page.getByTestId("pagination-info")).toContainText("Página 2 de 2");
+    await expect(page.getByTestId("expense-row-exp-51")).toBeVisible({ timeout: 10_000 });
   });
 });
